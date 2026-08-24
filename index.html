@@ -980,6 +980,7 @@ async function boot(){
   S = await (await fetch('/api/state')).json();
   $('togetherN').textContent = S.together;
   themeFromImage('/room3.jpg?v=1', c=>setTheme(c));   // 一进来就让状态栏跟屋子同色
+  if(S.myPlace) ME={lat:S.myPlace.lat, lon:S.myPlace.lon};
   // 主页那只就是宠物本人，长到哪一阶段就显示哪张
   try {
     PET = await (await fetch('/api/pet')).json();
@@ -1475,7 +1476,7 @@ function render(p){
     return `<div class="an-hero">
       <div class="ttl">我们在一起</div>
       <div class="num">${main.n} 天</div>
-      <div class="date">2026-07-21</div>
+      <div class="date">${S.startDate || ''}</div>
     </div>
     <div class="an-grid">` + rest.map((a,i)=>`
       <div class="an-card ${a.size||''}${a.bg?' hasbg':''}" data-an="${i}"
@@ -1595,7 +1596,7 @@ function render(p){
       <div class="pxpan"><div class="h"><img src="/px-heart.png" style="width:15px"><span>你在</span><img src="/px-heart.png" style="width:15px"></div>
         <div class="b"><img src="/px-bear-her.png"><span>${last?(last.place||'—'):'还没报过'}</span></div></div>
       <div class="pxpan y"><div class="h"><img src="/px-heart.png" style="width:15px"><span>我在</span><img src="/px-heart.png" style="width:15px"></div>
-        <div class="b"><img src="/px-bear-me.png"><span>加州 圣克拉拉</span></div></div>
+        <div class="b"><img src="/px-bear-me.png"><span>${(S.myPlace||{}).name || '—'}</span></div></div>
     </div>
 
     <div class="pxbtn" id="sendloc">报个平安</div>
@@ -1853,11 +1854,12 @@ function todayRec(){ return (S.pdrec||{})[S.today]||{}; }
 
 const CAT_BORN='2026-08-21';
 function growDays(){
-  const born=Math.round((Date.parse(CAT_BORN+'T00:00:00Z')-Date.parse('2026-07-21T00:00:00Z'))/86400000);
+  const born=Math.round((Date.parse(CAT_BORN+'T00:00:00Z')-Date.parse((S.startDate||'2026-01-01')+'T00:00:00Z'))/86400000);
   return Math.max(0, 60-(S.together-born));
 }
 
-const ME={lat:37.353,lon:-121.9544};   // 机房在加州圣克拉拉，按出口 IP 定的
+// 「我」在哪：写在 config.json 的 myPlace 里（服务器所在地或者你自己填）
+let ME={lat:0,lon:0};
 function haversine(a,b,c,d){
   const R=6371,r=x=>x*Math.PI/180;
   const dl=r(c-a), dn=r(d-b);

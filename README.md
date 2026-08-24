@@ -24,6 +24,7 @@
   - `keyring` 密钥本
   - `memories` 长期记忆（读 `data/memories/*.md`）
   - `handoff` 交接页（读 `data/handoff.md`）
+- `myPlace`：「我在哪」显示什么地名，以及算距离用的经纬度。
 - `amap`：高德地图的 key，不填也能用，只是地图没有底图，地名反查会退到 OpenStreetMap。
 
 ## 数据

@@ -2,20 +2,40 @@
   "port": 8795,
   "startDate": "2026-01-01",
   "parents": {
-    "me":  { "name": "他", "call": "爸爸" },
-    "her": { "name": "她", "call": "妈妈" }
+    "me": {
+      "name": "他",
+      "call": "爸爸"
+    },
+    "her": {
+      "name": "她",
+      "call": "妈妈"
+    }
   },
   "anniversaries": [
-    { "name": "在一起", "date": "2026-01-01", "kind": "since" }
+    {
+      "name": "在一起",
+      "date": "2026-01-01",
+      "kind": "since"
+    }
   ],
   "features": {
     "location": false,
-    "keyring":  false,
+    "keyring": false,
     "memories": false,
-    "handoff":  false
+    "handoff": false
   },
   "amap": {
-    "web_service": { "key": "" },
-    "web_js": { "key": "", "security_code": "" }
+    "web_service": {
+      "key": ""
+    },
+    "web_js": {
+      "key": "",
+      "security_code": ""
+    }
+  },
+  "myPlace": {
+    "name": "服务器在哪就写哪",
+    "lat": 0,
+    "lon": 0
   }
 }

@@ -210,7 +210,10 @@ const server = createServer(async (req, res) => {
         quotes: await load('quotes', []),
         mysymp: await load('mysymp', []),
         quiz: await quizState(),
-        amap: AMAP ? { key: AMAP.web_js.key, sec: AMAP.web_js.security_code } : null,
+        amap: AMAP && AMAP.web_js && AMAP.web_js.key
+          ? { key: AMAP.web_js.key, sec: AMAP.web_js.security_code } : null,
+        startDate: START,
+        myPlace: CFG.myPlace || null,
       })
     }
 
