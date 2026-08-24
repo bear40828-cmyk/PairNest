@@ -1,12 +1,14 @@
 // PairNest —— 两个人的小屋。所有私人内容都在 config.json 和 data/ 里，代码本身不带任何个人信息。
 import { createServer } from 'node:http'
-import { readFile, writeFile, readdir, stat } from 'node:fs/promises'
+import { readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATA = join(HERE, 'data')
+// 刚 clone 下来是没有 data 目录的（里面的东西都被 gitignore 了），先建出来
+await mkdir(join(DATA, 'memories'), { recursive: true })
 // 端口在 config.json 里改
 // ---- 配置：照着 config.example.json 复制一份改成 config.json ----
 let CFG = {}
