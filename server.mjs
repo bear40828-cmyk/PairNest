@@ -72,6 +72,97 @@ async function sparkDays() {
   return { days: days.length, today: days.includes(bjToday()) }
 }
 
+// ---- 云养宠 ----
+// 数值只在读的时候按时间往回算，不跑定时器：进程重启不影响，
+// 隔几天再打开也能看到该掉的都掉了。
+const PET_STAGES = [
+  { key: 'egg',   name: '蛋',   img: '/pet-egg.png',   hours: 0 },
+  { key: 'baby',  name: '幼年', img: '/pet-baby.png',  hours: 24 },
+  { key: 'kid',   name: '少年', img: '/pet-kid.png',   hours: 72 },
+  { key: 'adult', name: '成年', img: '/pet-adult.png', hours: 168 },
+]
+const PET_ACTS = {
+  feed: { label: '喂饭', cool: 3 * 3600e3, hunger: 25, mood: 4,  love: 2 },
+  pat:  { label: '摸头', cool: 30 * 60e3,  hunger: 0,  mood: 12, love: 1 },
+  talk: { label: '陪伴', cool: 2 * 3600e3, hunger: 0,  mood: 18, love: 3 },
+}
+const clamp = v => Math.max(0, Math.min(100, Math.round(v)))
+
+async function petRaw() {
+  return await load('pet', null)
+}
+async function petState() {
+  let pet = await petRaw()
+  if (!pet) {
+    pet = { born: new Date().toISOString(), hunger: 80, mood: 80, love: 0,
+            tick: new Date().toISOString(), last: {}, log: [] }
+    await save('pet', pet)
+  }
+  const now = Date.now()
+  // 掉值：饿得比心情快一点
+  const h = (now - Date.parse(pet.tick)) / 3600e3
+  const hunger = clamp(pet.hunger - h * 3)
+  const mood = clamp(pet.mood - h * 2.5)
+
+  const ageH = (now - Date.parse(pet.born)) / 3600e3
+  let si = 0
+  for (let i = 0; i < PET_STAGES.length; i++) if (ageH >= PET_STAGES[i].hours) si = i
+  const st = PET_STAGES[si]
+  const next = PET_STAGES[si + 1] || null
+
+  const cools = {}
+  for (const [k, a] of Object.entries(PET_ACTS)) {
+    const at = pet.last[k] ? Date.parse(pet.last[k]) : 0
+    cools[k] = Math.max(0, Math.round((at + a.cool - now) / 1000))
+  }
+
+  // 表情：只有少年阶段有整套图，别的阶段还是那一张
+  const bjH = new Date(now + BJ).getUTCHours()
+  const lastAct = Math.max(0, ...Object.values(pet.last || {}).map(v => Date.parse(v) || 0))
+  const missH = lastAct ? (now - lastAct) / 3600e3 : 0
+  let mood_ = 'happy'
+  if (bjH >= 1 && bjH < 8) mood_ = 'sleep'
+  else if (hunger < 25) mood_ = 'hungry'
+  else if (missH > 5) mood_ = 'miss'
+  else if (mood < 25) mood_ = 'hungry'
+  const faces = (st.key === 'kid' || st.key === 'adult')
+    ? { idle: `/pet-${st.key}-${mood_}.png`, blink: `/pet-${st.key}-blink.png`, mood: mood_ }
+    : { idle: st.img, blink: null, mood: null }
+
+  // 一句话状态，优先说最要紧的那个
+  const say = hunger < 25 ? '饿扁了…' : mood < 25 ? '有点蔫'
+            : st.key === 'egg' ? '壳里有动静' : hunger > 75 && mood > 75 ? '心满意足' : '还行'
+
+  return {
+    stage: st.key, stageName: st.name, img: faces.idle, faces,
+    hunger, mood, love: pet.love, say,
+    ageH: Math.floor(ageH),
+    nextIn: next ? Math.max(0, Math.ceil(next.hours - ageH)) : null,
+    nextName: next ? next.name : null,
+    cools, log: (pet.log || []).slice(0, 20),
+    born: pet.born,
+    profile: pet.profile || { name: '', sex: 'secret', birth: pet.born.slice(0, 10) },
+    parents: pet.parents || CFG.parents || { me: { name: '他', call: '爸爸' }, her: { name: '她', call: '妈妈' } },
+  }
+}
+async function petAct(act, who) {
+  const a = PET_ACTS[act]
+  if (!a) return { ok: false, why: 'no_such_act' }
+  const s = await petState()          // 先落一次衰减后的值
+  const pet = await petRaw()
+  if (s.cools[act] > 0) return { ok: false, why: 'cooling', left: s.cools[act] }
+
+  pet.hunger = clamp(s.hunger + a.hunger)
+  pet.mood = clamp(s.mood + a.mood)
+  pet.love = (pet.love || 0) + a.love
+  pet.tick = new Date().toISOString()
+  pet.last = pet.last || {}
+  pet.last[act] = pet.tick
+  pet.log = [{ who, act, label: a.label, at: pet.tick }].concat(pet.log || []).slice(0, 200)
+  await save('pet', pet)
+  return { ok: true, ...(await petState()) }
+}
+
 const J = (res, obj, code = 200) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(obj))
