@@ -7,9 +7,14 @@ import { join, dirname, extname, resolve, sep, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const DATA = join(HERE, 'data')
+// 云平台可以把持久磁盘挂载到独立目录；本机运行时仍默认写在项目目录。
+const STATE_DIR = resolve(process.env.PAIRNEST_STATE_DIR || HERE)
+const DATA = join(STATE_DIR, 'data')
 const UPLOADS = join(DATA, 'uploads')
-const CONFIG_FILE = join(HERE, 'config.json')
+const CONFIG_FILE = join(STATE_DIR, 'config.json')
+const CONFIG_EXAMPLE_FILE = join(HERE, 'config.example.json')
+
+await mkdir(STATE_DIR, { recursive: true })
 
 // 首次启动自动生成本机配置和随机凭据。config.json 已被 gitignore，不会被提交。
 let CFG
@@ -18,7 +23,7 @@ try {
   CFG = JSON.parse(await readFile(CONFIG_FILE, 'utf8'))
 } catch (e) {
   if (e.code !== 'ENOENT') throw new Error(`config.json 解析失败：${e.message}`)
-  CFG = JSON.parse(await readFile(join(HERE, 'config.example.json'), 'utf8'))
+  CFG = JSON.parse(await readFile(CONFIG_EXAMPLE_FILE, 'utf8'))
   firstRun = true
 }
 CFG.auth = CFG.auth || {}
@@ -35,21 +40,32 @@ if (!CFG.auth.apiToken) {
   CFG.auth.apiToken = randomBytes(32).toString('base64url')
   generatedCredentials = true
 }
+const AUTH_PASSWORD = String(process.env.PAIRNEST_PASSWORD || CFG.auth.password)
+const AUTH_SECRET = String(process.env.PAIRNEST_AUTH_SECRET || CFG.auth.secret)
+const API_TOKEN = String(process.env.PAIRNEST_API_TOKEN || CFG.auth.apiToken)
+
 if (firstRun || generatedCredentials) {
   await writeFile(CONFIG_FILE, JSON.stringify(CFG, null, 2) + '\n', { mode: 0o600 })
   try { await chmod(CONFIG_FILE, 0o600) } catch {}
-  console.log('\nPairNest 已生成本机 config.json（不会提交到 Git）。')
-  console.log(`网页登录密码：${CFG.auth.password}`)
-  console.log(`API Token：${CFG.auth.apiToken}`)
-  console.log('请现在保存这两个值；以后可在 config.json 的 auth 中修改。\n')
+  console.log(`\nPairNest 已生成 ${CONFIG_FILE}。`)
+  console.log(process.env.PAIRNEST_PASSWORD
+    ? '网页登录密码：已由 PAIRNEST_PASSWORD 环境变量配置'
+    : `网页登录密码：${AUTH_PASSWORD}`)
+  console.log(process.env.PAIRNEST_API_TOKEN
+    ? 'API Token：已由 PAIRNEST_API_TOKEN 环境变量配置'
+    : `API Token：${API_TOKEN}`)
+  console.log('请妥善保存凭据；不要把 config.json 或环境变量发给别人。\n')
 }
 
 // 刚 clone 下来没有 data 目录；同时把用户上传的纪念日背景限制在 data/uploads。
 await mkdir(join(DATA, 'memories'), { recursive: true })
 await mkdir(UPLOADS, { recursive: true })
 
-const PORT_CFG = CFG.port || 8795
-const HOST_CFG = CFG.host || '127.0.0.1'
+const PORT_CFG = Number(process.env.PORT || CFG.port || 8795)
+const HOST_CFG = process.env.HOST || CFG.host || '127.0.0.1'
+if (!Number.isInteger(PORT_CFG) || PORT_CFG < 1 || PORT_CFG > 65535) {
+  throw new Error(`无效端口：${process.env.PORT || CFG.port}`)
+}
 const FEATURES = Object.assign(
   { location: false, keyring: false, memories: false, handoff: false },
   CFG.features || {},
@@ -61,9 +77,6 @@ const AMAP = CFG.amap || null
 // 在一起的第一天，写在 config.json 里
 const START = CFG.startDate || '2026-01-01'
 const BJ = 8 * 3600 * 1000
-const AUTH_PASSWORD = String(process.env.PAIRNEST_PASSWORD || CFG.auth.password)
-const AUTH_SECRET = String(process.env.PAIRNEST_AUTH_SECRET || CFG.auth.secret)
-const API_TOKEN = String(process.env.PAIRNEST_API_TOKEN || CFG.auth.apiToken)
 const SESSION_SECONDS = 30 * 24 * 60 * 60
 const AUTH_COOKIE = 'pn_session'
 
@@ -490,10 +503,10 @@ const server = createServer(async (req, res) => {
       if (!FEATURES.memories) return J(res, { items: [] })
       const out = []
       try {
-        const MEMDIR = CFG.memoryDir || join(HERE, 'data', 'memories')
+        const MEMDIR = CFG.memoryDir || join(DATA, 'memories')
         const files = (await readdir(MEMDIR)).filter(f => f.endsWith('.md'))
         for (const f of files.sort()) {
-          const raw = await readFile(join(CFG.memoryDir || join(HERE, 'data', 'memories'), f), 'utf8')
+          const raw = await readFile(join(MEMDIR, f), 'utf8')
           const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
           let desc = '', body = raw
           if (m) {

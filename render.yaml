@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: pairnest
+    runtime: node
+    plan: starter
+    autoDeploy: false
+    buildCommand: node --check server.mjs
+    startCommand: node server.mjs
+    healthCheckPath: /healthz
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PAIRNEST_STATE_DIR
+        value: /var/data
+      - key: PAIRNEST_PASSWORD
+        sync: false
+      - key: PAIRNEST_AUTH_SECRET
+        generateValue: true
+      - key: PAIRNEST_API_TOKEN
+        generateValue: true
+    disk:
+      name: pairnest-data
+      mountPath: /var/data
+      sizeGB: 1
