@@ -1,6 +1,7 @@
 config.json
 data/*.json
 data/memories/
+data/uploads/
 data/handoff.md
 data/keyring.md
 data/keypw.txt
