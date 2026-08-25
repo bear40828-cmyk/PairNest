@@ -4,6 +4,12 @@
 
 一个 Node 进程同时提供页面和 API。私人内容保存在本机 `config.json` 与 `data/`，不会写进 Git 仓库。公开部署时整站有登录保护，API 也支持独立 Bearer Token。
 
+## 开发协作
+
+PairNest 由 `bear40828-cmyk` 发起并负责产品构想、功能需求、视觉方向与实际测试，Claude 和 ChatGPT 参与代码实现、调试、安全检查及文档整理。
+
+GitHub 页面底部的 Contributors 由提交所使用的 GitHub 账号自动统计。当前代码通过项目所有者的账号提交，因此自动列表只显示一个账号；这里单独记录实际的协作方式。
+
 ## 部署需要什么
 
 PairNest 不绑定或推荐具体云平台。每位使用者需要自行选择部署产品，并自行判断其价格、地区、付款方式、服务限制与隐私条款。
@@ -129,7 +135,8 @@ PairNest 不要求必须使用高德。部署者可以根据自己的地区、�
 - 日记、经期、宠物、语录等数据保存在本机 `data/*.json`。
 - 浏览器提交定位后，精确坐标会先发到你自己的 PairNest 服务器。
 - 服务器会按部署者实际接入的地图服务处理坐标与地名；当前高德示例会把坐标发送给高德，未配置高德时会尝试发送给 OpenStreetMap Nominatim。
-- 只有从 Telegram WebApp 启动时，页面才加载 Telegram 的 WebApp 脚本；普通浏览器不再固定请求该脚本。
+- PairNest 是可以直接在普通浏览器中打开并安装的独立 PWA，不要求使用 Telegram、某个 AI 官方 App 或特定自建前端。
+- 如果使用者自行从 Telegram WebApp 启动 PairNest，页面才会加载 Telegram 的 WebApp 脚本；普通浏览器和独立 PWA 不会固定请求该脚本。
 - 登录 Cookie 使用 `HttpOnly` 与 `SameSite=Strict`；经 HTTPS 反代时还会带 `Secure`。
 
 因此“数据在本地”是指 PairNest 不把数据集中上传给项目作者，不代表开启定位后完全不与地图服务通信。
