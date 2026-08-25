@@ -1,9 +1,13 @@
 {
   "name": "PairNest",
   "short_name": "PairNest",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#fdf5eb",
+  "theme_color": "#fdf1e6",
   "icons": [
     {
       "src": "/icon-192.png?v=2",
