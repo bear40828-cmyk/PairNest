@@ -1,19 +1,55 @@
 // PairNest —— 两个人的小屋。所有私人内容都在 config.json 和 data/ 里，代码本身不带任何个人信息。
 import { createServer } from 'node:http'
-import { readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { readFile, writeFile, readdir, mkdir, chmod } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join, dirname, extname } from 'node:path'
+import { join, dirname, extname, resolve, sep, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATA = join(HERE, 'data')
-// 刚 clone 下来是没有 data 目录的（里面的东西都被 gitignore 了），先建出来
+const UPLOADS = join(DATA, 'uploads')
+const CONFIG_FILE = join(HERE, 'config.json')
+
+// 首次启动自动生成本机配置和随机凭据。config.json 已被 gitignore，不会被提交。
+let CFG
+let firstRun = false
+try {
+  CFG = JSON.parse(await readFile(CONFIG_FILE, 'utf8'))
+} catch (e) {
+  if (e.code !== 'ENOENT') throw new Error(`config.json 解析失败：${e.message}`)
+  CFG = JSON.parse(await readFile(join(HERE, 'config.example.json'), 'utf8'))
+  firstRun = true
+}
+CFG.auth = CFG.auth || {}
+let generatedCredentials = false
+if (!CFG.auth.password) {
+  CFG.auth.password = randomBytes(15).toString('base64url')
+  generatedCredentials = true
+}
+if (!CFG.auth.secret) {
+  CFG.auth.secret = randomBytes(32).toString('base64url')
+  generatedCredentials = true
+}
+if (!CFG.auth.apiToken) {
+  CFG.auth.apiToken = randomBytes(32).toString('base64url')
+  generatedCredentials = true
+}
+if (firstRun || generatedCredentials) {
+  await writeFile(CONFIG_FILE, JSON.stringify(CFG, null, 2) + '\n', { mode: 0o600 })
+  try { await chmod(CONFIG_FILE, 0o600) } catch {}
+  console.log('\nPairNest 已生成本机 config.json（不会提交到 Git）。')
+  console.log(`网页登录密码：${CFG.auth.password}`)
+  console.log(`API Token：${CFG.auth.apiToken}`)
+  console.log('请现在保存这两个值；以后可在 config.json 的 auth 中修改。\n')
+}
+
+// 刚 clone 下来没有 data 目录；同时把用户上传的纪念日背景限制在 data/uploads。
 await mkdir(join(DATA, 'memories'), { recursive: true })
-// 端口在 config.json 里改
-// ---- 配置：照着 config.example.json 复制一份改成 config.json ----
-let CFG = {}
-try { CFG = JSON.parse(await readFile(join(HERE, 'config.json'), 'utf8')) } catch {}
+await mkdir(UPLOADS, { recursive: true })
+
 const PORT_CFG = CFG.port || 8795
+const HOST_CFG = CFG.host || '127.0.0.1'
 const FEATURES = Object.assign(
   { location: false, keyring: false, memories: false, handoff: false },
   CFG.features || {},
@@ -25,6 +61,11 @@ const AMAP = CFG.amap || null
 // 在一起的第一天，写在 config.json 里
 const START = CFG.startDate || '2026-01-01'
 const BJ = 8 * 3600 * 1000
+const AUTH_PASSWORD = String(process.env.PAIRNEST_PASSWORD || CFG.auth.password)
+const AUTH_SECRET = String(process.env.PAIRNEST_AUTH_SECRET || CFG.auth.secret)
+const API_TOKEN = String(process.env.PAIRNEST_API_TOKEN || CFG.auth.apiToken)
+const SESSION_SECONDS = 30 * 24 * 60 * 60
+const AUTH_COOKIE = 'pn_session'
 
 const DEFAULT_ANNIV = CFG.anniversaries || [
   { name: '在一起', date: CFG.startDate || '2026-01-01', kind: 'since' },
@@ -163,21 +204,176 @@ async function petAct(act, who) {
   return { ok: true, ...(await petState()) }
 }
 
+const safeEqual = (a, b) => {
+  const aa = Buffer.from(String(a)), bb = Buffer.from(String(b))
+  return aa.length === bb.length && timingSafeEqual(aa, bb)
+}
+const sessionSignature = expires =>
+  createHmac('sha256', AUTH_SECRET).update(`pairnest:${expires}`).digest('base64url')
+const makeSession = () => {
+  const expires = Math.floor(Date.now() / 1000) + SESSION_SECONDS
+  return `${expires}.${sessionSignature(expires)}`
+}
+const cookieMap = req => Object.fromEntries(
+  String(req.headers.cookie || '').split(';').map(v => v.trim()).filter(Boolean).map(v => {
+    const i = v.indexOf('=')
+    return i < 0 ? [v, ''] : [v.slice(0, i), decodeURIComponent(v.slice(i + 1))]
+  }),
+)
+function validSession(token) {
+  const [expires, sig] = String(token || '').split('.')
+  if (!/^\d+$/.test(expires || '') || Number(expires) < Date.now() / 1000) return false
+  return safeEqual(sig || '', sessionSignature(expires))
+}
+function authenticated(req) {
+  const auth = String(req.headers.authorization || '')
+  if (auth.startsWith('Bearer ') && safeEqual(auth.slice(7), API_TOKEN)) return true
+  return validSession(cookieMap(req)[AUTH_COOKIE])
+}
+function secureRequest(req) {
+  return !!req.socket.encrypted || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'
+}
+function sameOrigin(req) {
+  const origin = req.headers.origin
+  if (!origin) return true // curl / MCP 等无浏览器客户端依靠 Bearer Token
+  try {
+    const forwarded = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim()
+    return new URL(origin).host === (forwarded || req.headers.host)
+  } catch { return false }
+}
+function securityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(), microphone=()')
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+}
+async function readBody(req, limit = 256 * 1024) {
+  const declared = Number(req.headers['content-length'] || 0)
+  if (declared > limit) throw Object.assign(new Error('request_too_large'), { statusCode: 413 })
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > limit) throw Object.assign(new Error('request_too_large'), { statusCode: 413 })
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+async function readJson(req, limit) {
+  const raw = await readBody(req, limit)
+  try { return JSON.parse(raw || '{}') }
+  catch { throw Object.assign(new Error('invalid_json'), { statusCode: 400 }) }
+}
+const badRequest = message => { throw Object.assign(new Error(message), { statusCode: 400 }) }
+const shortText = (value, max) => String(value ?? '').trim().slice(0, max)
+function safeDay(value) {
+  const day = String(value || '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day + 'T00:00:00Z'))) badRequest('invalid_day')
+  return day
+}
+const loginAttempts = new Map()
+function loginAllowed(req) {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+  const now = Date.now()
+  let row = loginAttempts.get(ip)
+  if (!row || now - row.since > 10 * 60 * 1000) row = { since: now, fails: 0 }
+  loginAttempts.set(ip, row)
+  return { ip, row, ok: row.fails < 8 }
+}
+function loginPage(error = '') {
+  const msg = error ? '<p class="err">密码不对，或者尝试太频繁了。</p>' : ''
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#fdf1e6"><title>登录 PairNest</title>
+<style>*{box-sizing:border-box}html,body{min-height:100%;margin:0}body{display:grid;place-items:center;padding:24px;background:#fdf1e6;color:#6b4a52;font-family:-apple-system,"PingFang SC",sans-serif}.box{width:min(360px,100%);background:#fffdfd;border:2px solid #e8b9c4;border-radius:24px;padding:28px;box-shadow:0 5px 0 #e8b9c4}h1{font-size:22px;margin:0 0 8px}p{font-size:13px;line-height:1.7;color:#a87884}.err{color:#c84f70}input,button{width:100%;font:inherit;border-radius:14px;padding:12px 14px}input{border:2px solid #e8b9c4;background:#fff8fa;outline:none}button{margin-top:12px;border:0;background:#ff9fbb;color:#fff;font-weight:700}</style></head>
+<body><form class="box" method="post" action="/login"><h1>PairNest</h1><p>输入首次启动时终端显示的网页登录密码。</p>${msg}<input name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">进入小屋</button></form></body></html>`
+}
+
 const J = (res, obj, code = 200) => {
+  securityHeaders(res)
+  res.setHeader('Cache-Control', 'no-store')
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(obj))
 }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.webp': 'image/webp',
-  '.jpg': 'image/jpeg', '.json': 'application/json; charset=utf-8',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.json': 'application/json; charset=utf-8',
   '.woff2': 'font/woff2', '.ttf': 'font/ttf' }
+const PUBLIC_IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp'])
+const PUBLIC_FONT_EXT = new Set(['.woff2', '.ttf'])
+function publicFile(pathname) {
+  let rel
+  try { rel = decodeURIComponent(pathname === '/' ? 'index.html' : pathname.slice(1)) }
+  catch { return null }
+  if (!rel || rel.includes('\0') || rel.split('/').some(x => x === '..' || x.startsWith('.'))) return null
+
+  if (rel.startsWith('uploads/')) {
+    const name = basename(rel)
+    if (name !== rel.slice('uploads/'.length) || !/^an-user-\d+\.(png|jpe?g|webp)$/.test(name)) return null
+    return join(UPLOADS, name)
+  }
+  if (rel === 'index.html' || rel === 'manifest.json') return join(HERE, rel)
+  if (rel.startsWith('fonts/') && PUBLIC_FONT_EXT.has(extname(rel).toLowerCase())) {
+    const full = resolve(HERE, rel)
+    return full.startsWith(resolve(HERE, 'fonts') + sep) ? full : null
+  }
+  // 现有图片素材都放在仓库根目录；不允许借扩展名访问任何子目录。
+  if (!rel.includes('/') && PUBLIC_IMAGE_EXT.has(extname(rel).toLowerCase())) return join(HERE, rel)
+  return null
+}
 
 const PORT = PORT_CFG
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const p = url.pathname
+  securityHeaders(res)
 
   try {
+    // 反向代理和容器可以用这个端点探活；它不返回任何私人数据。
+    if (p === '/healthz') return J(res, { ok: true })
+
+    if (p === '/login' && req.method === 'GET') {
+      if (authenticated(req)) { res.writeHead(302, { Location: '/' }); return res.end() }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+      return res.end(loginPage())
+    }
+    if (p === '/login' && req.method === 'POST') {
+      const attempt = loginAllowed(req)
+      const form = new URLSearchParams(await readBody(req, 16 * 1024))
+      if (!attempt.ok || !safeEqual(form.get('password') || '', AUTH_PASSWORD)) {
+        attempt.row.fails += 1
+        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(loginPage(true))
+      }
+      loginAttempts.delete(attempt.ip)
+      const secure = secureRequest(req) ? '; Secure' : ''
+      res.writeHead(303, {
+        Location: '/',
+        'Set-Cookie': `${AUTH_COOKIE}=${encodeURIComponent(makeSession())}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_SECONDS}${secure}`,
+        'Cache-Control': 'no-store',
+      })
+      return res.end()
+    }
+    if (p === '/logout' && req.method === 'POST') {
+      res.writeHead(303, {
+        Location: '/login',
+        'Set-Cookie': `${AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`,
+        'Cache-Control': 'no-store',
+      })
+      return res.end()
+    }
+
+    if (!authenticated(req)) {
+      if (p.startsWith('/api/')) return J(res, { error: 'unauthorized' }, 401)
+      res.writeHead(302, { Location: '/login', 'Cache-Control': 'no-store' })
+      return res.end()
+    }
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method || 'GET') && !sameOrigin(req) &&
+        !String(req.headers.authorization || '').startsWith('Bearer ')) {
+      return J(res, { error: 'cross_origin_request_blocked' }, 403)
+    }
+
     if (p === '/api/state') {
       const today = bjToday()
       const spark = await sparkDays()
@@ -218,9 +414,10 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/event' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { type, note } = JSON.parse(body || '{}')
+      const body = await readJson(req)
+      const type = shortText(body.type, 32)
+      const note = shortText(body.note, 500)
+      if (!type) badRequest('missing_event_type')
       const events = await load('events', [])
       events.unshift({ type, note: note || '', at: new Date().toISOString(), day: bjToday() })
       await save('events', events.slice(0, 500))
@@ -235,9 +432,11 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/diary' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day, text, tags, mood } = JSON.parse(body || '{}')
+      const body = await readJson(req)
+      const day = safeDay(body.day)
+      const text = String(body.text ?? '').slice(0, 50000)
+      const tags = Array.isArray(body.tags) ? body.tags.slice(0, 20).map(x => shortText(x, 30)).filter(Boolean) : []
+      const mood = shortText(body.mood, 20)
       const d = await load('diaries', {})
       d[day] = { text: text || '', tags: tags || [], at: new Date().toISOString() }
       await save('diaries', d)
@@ -254,9 +453,8 @@ const server = createServer(async (req, res) => {
     // 一天一天记：点一下加上，再点去掉
     // 来了 = 从今天起开始记；走了 = 今天之前那段到昨天为止
     if (p === '/api/pdmark' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day } = JSON.parse(body || '{}')
+      const { day: rawDay } = await readJson(req)
+      const day = safeDay(rawDay)
       let ds = [...new Set(await load('pdays', []))].sort()
 
       if (!ds.includes(day)) {
@@ -276,9 +474,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/pday' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day } = JSON.parse(body || '{}')
+      const { day: rawDay } = await readJson(req)
+      const day = safeDay(rawDay)
       const ds = await load('pdays', [])
       const i = ds.indexOf(day)
       if (i >= 0) ds.splice(i, 1); else ds.push(day)
@@ -320,9 +517,10 @@ const server = createServer(async (req, res) => {
 
     if (p === '/api/loc' && req.method === 'POST') {
       if (!FEATURES.location) return J(res, { ok: false, why: 'disabled' })
-      let body = ''
-      for await (const c of req) body += c
-      const { lat, lon, auto } = JSON.parse(body || '{}')
+      const { lat, lon, auto } = await readJson(req)
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+        badRequest('invalid_coordinates')
+      }
       {
         const prev = (await load('locs', [])).slice(-1)[0]
         if (prev) {
@@ -378,9 +576,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/pdrec' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day, flow, pain, symptoms } = JSON.parse(body || '{}')
+      const body = await readJson(req)
+      const day = safeDay(body.day)
+      const flow = body.flow == null ? null : Math.max(0, Math.min(5, Number(body.flow)))
+      const pain = body.pain == null ? null : Math.max(0, Math.min(5, Number(body.pain)))
+      const symptoms = Array.isArray(body.symptoms)
+        ? body.symptoms.slice(0, 30).map(x => shortText(x, 40)).filter(Boolean) : undefined
       const r = await load('pdrec', {})
       r[day] = r[day] || {}
       if (flow !== undefined) r[day].flow = flow
@@ -391,9 +592,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/mysymp' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { name } = JSON.parse(body || '{}')
+      const { name: rawName } = await readJson(req)
+      const name = shortText(rawName, 40)
       const l = await load('mysymp', [])
       if (name && !l.includes(name)) l.push(name)
       await save('mysymp', l)
@@ -404,9 +604,7 @@ const server = createServer(async (req, res) => {
     if (p === '/api/pet') return J(res, await petState())
 
     if (p === '/api/pet/profile' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { name, sex, birth } = JSON.parse(body || '{}')
+      const { name, sex, birth } = await readJson(req)
       await petState()                    // 保证 pet.json 存在
       const pet = await petRaw()
       pet.profile = {
@@ -419,9 +617,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/pet/parents' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const b = JSON.parse(body || '{}')
+      const b = await readJson(req)
       const one = (v, dn, dc) => ({
         name: (v?.name || dn).slice(0, 8),
         call: (v?.call || dc).slice(0, 8),
@@ -434,24 +630,22 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/pet/act' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { act, who } = JSON.parse(body || '{}')
+      const { act, who } = await readJson(req)
       return J(res, await petAct(act, who === 'me' ? 'me' : 'her'))
     }
 
     if (p === '/api/pdcfg' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { len, cycle } = JSON.parse(body || '{}')
-      await save('pdcfg', { len: len || 5, cycle: cycle || 28 })
+      const { len, cycle } = await readJson(req)
+      await save('pdcfg', {
+        len: Math.max(1, Math.min(14, Number(len) || 5)),
+        cycle: Math.max(15, Math.min(90, Number(cycle) || 28)),
+      })
       return J(res, { ok: true })
     }
 
     if (p === '/api/period' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day } = JSON.parse(body || '{}')
+      const { day: rawDay } = await readJson(req)
+      const day = safeDay(rawDay)
       const ps = await load('periods', [])
       const open_ = ps.find(x => !x.end)
       if (open_) open_.end = day
@@ -462,28 +656,29 @@ const server = createServer(async (req, res) => {
 
     // 自定义背景：前端传 dataURL，落成文件，只留路径
     if (p === '/api/anniv/bg' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { data } = JSON.parse(body || '{}')
+      const { data } = await readJson(req, 7 * 1024 * 1024)
       const m = /^data:image\/(png|jpeg|jpg|webp);base64,([\s\S]+)$/.exec(data || '')
       if (!m) return J(res, { ok: false, why: 'bad_image' }, 400)
       const ext = m[1] === 'jpeg' ? 'jpg' : m[1]
       const name = `an-user-${Date.now()}.${ext}`
-      await writeFile(join(HERE, name), Buffer.from(m[2], 'base64'))
-      return J(res, { ok: true, url: '/' + name })
+      const image = Buffer.from(m[2], 'base64')
+      if (image.length > 5 * 1024 * 1024) return J(res, { ok: false, why: 'image_too_large' }, 413)
+      await writeFile(join(UPLOADS, name), image)
+      return J(res, { ok: true, url: '/uploads/' + name })
     }
 
     if (p === '/api/anniv' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const b = JSON.parse(body || '{}')
+      const b = await readJson(req)
       const a = await load('anniversaries', DEFAULT_ANNIV)
+      const date = safeDay(b.date)
       const row = {
-        name: b.name, date: b.date,
+        name: shortText(b.name, 40) || '纪念日', date,
         // 不再让她选：日期在将来就倒数，过去就是已经过了多少天
-        kind: b.date < bjToday() ? 'since' : 'until',
-        yearly: !!b.yearly, incStart: !!b.incStart, color: b.color || '#6b3d2e',
-        bg: typeof b.bg === 'string' ? b.bg.slice(0, 80) : '',
+        kind: date < bjToday() ? 'since' : 'until',
+        yearly: !!b.yearly, incStart: !!b.incStart,
+        color: /^#[0-9a-f]{6}$/i.test(b.color || '') ? b.color : '#6b3d2e',
+        bg: typeof b.bg === 'string' && (/^\/(an-bg\d?\.(jpg|png)|uploads\/an-user-\d+\.(png|jpe?g|webp))$/i.test(b.bg))
+          ? b.bg.slice(0, 120) : '',
         bgPos: typeof b.bgPos === 'string' ? b.bgPos.slice(0, 24) : 'center',
         size: ['sq', 'wide', 'tall'].includes(b.size) ? b.size : 'wide',
       }
@@ -495,9 +690,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/anniv/del' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { i } = JSON.parse(body || '{}')
+      const { i } = await readJson(req)
       const a = await load('anniversaries', DEFAULT_ANNIV)
       if (i > 3) { a.splice(i, 1); await save('anniversaries', a) }
       return J(res, { ok: true })
@@ -505,39 +698,37 @@ const server = createServer(async (req, res) => {
 
     if (p === '/api/keys' && req.method === 'POST') {
       if (!FEATURES.keyring) return J(res, { ok: false, why: 'disabled' })
-      let body = ''
-      for await (const c of req) body += c
-      const { pw } = JSON.parse(body || '{}')
-      let secret = '0721'
+      const { pw } = await readJson(req)
+      let secret = ''
       try { secret = (await readFile(join(DATA, 'keypw.txt'), 'utf8')).trim() } catch {}
-      if (pw !== secret) return J(res, { ok: false })
+      if (!secret) return J(res, { ok: false, why: 'not_configured' }, 503)
+      if (!safeEqual(pw || '', secret)) return J(res, { ok: false })
       let text = '（还没同步过。跟我说一声，我把钥匙串那页抓下来。）'
       try { text = await readFile(join(DATA, 'keyring.md'), 'utf8') } catch {}
       return J(res, { ok: true, text })
     }
 
     if (p === '/api/comment/del' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day, i } = JSON.parse(body || '{}')
+      const { day: rawDay, i } = await readJson(req)
+      const day = safeDay(rawDay)
       const d = await load('diaries', {})
       if (d[day] && d[day].comments) { d[day].comments.splice(i, 1); await save('diaries', d) }
       return J(res, { ok: true })
     }
 
     if (p === '/api/seen' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day } = JSON.parse(body || '{}')
+      const { day: rawDay } = await readJson(req)
+      const day = safeDay(rawDay)
       const d = await load('diaries', {})
       if (d[day]) { d[day].seen = true; await save('diaries', d) }
       return J(res, { ok: true })
     }
 
     if (p === '/api/comment' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day, text } = JSON.parse(body || '{}')
+      const body = await readJson(req)
+      const day = safeDay(body.day)
+      const text = String(body.text ?? '').slice(0, 5000)
+      if (!text.trim()) badRequest('empty_comment')
       const d = await load('diaries', {})
       if (!d[day]) d[day] = { text: '', tags: [] }
       d[day].comments = (d[day].comments || []).concat([{ text, at: new Date().toISOString() }])
@@ -561,9 +752,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (p === '/api/quiz' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { id, pick } = JSON.parse(body || '{}')
+      const { id, pick } = await readJson(req)
       const bank = await quizBank()
       const q = bank.questions.find(x => String(x.id) === String(id))
       if (!q) return J(res, { error: 'no such question' }, 404)
@@ -577,38 +766,43 @@ const server = createServer(async (req, res) => {
 
     // 她的心情，跟我的分开存
     if (p === '/api/hermood' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { day, mood } = JSON.parse(body || '{}')
+      const body = await readJson(req)
+      const day = body.day ? safeDay(body.day) : bjToday()
+      const mood = shortText(body.mood, 20)
       const m = await load('hermoods', {})
-      if (mood) m[day || bjToday()] = mood
-      else delete m[day || bjToday()]
+      if (mood) m[day] = mood
+      else delete m[day]
       await save('hermoods', m)
       return J(res, { ok: true })
     }
 
     if (p === '/api/mood' && req.method === 'POST') {
-      let body = ''
-      for await (const c of req) body += c
-      const { mood } = JSON.parse(body || '{}')
+      const { mood } = await readJson(req)
       const moods = await load('moods', {})
       moods[bjToday()] = mood
       await save('moods', moods)
       return J(res, { ok: true })
     }
 
-    // 静态
-    const file = p === '/' ? 'index.html' : p.slice(1)
-    const full = join(HERE, file)
-    if (!full.startsWith(HERE) || !existsSync(full)) { res.writeHead(404); return res.end('404') }
-    res.writeHead(200, {
+    if (!['GET', 'HEAD'].includes(req.method || 'GET')) return J(res, { error: 'method_not_allowed' }, 405)
+
+    // 静态文件严格按白名单提供：页面、manifest、根目录图片、字体和 data/uploads 图片。
+    // config.json、server.mjs、.git 与 data 里的私人内容永远不会落进静态路径。
+    const full = publicFile(p)
+    if (!full || !existsSync(full)) { res.writeHead(404); return res.end('404') }
+    const headers = {
       'Content-Type': MIME[extname(full)] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-    })
+      'Cache-Control': extname(full) === '.html' || extname(full) === '.json'
+        ? 'no-cache' : 'private, max-age=86400',
+    }
+    res.writeHead(200, headers)
+    if (req.method === 'HEAD') return res.end()
     res.end(await readFile(full))
   } catch (e) {
-    J(res, { error: String(e.message || e) }, 500)
+    const status = Number(e.statusCode) || 500
+    J(res, { error: status === 500 ? 'internal_error' : String(e.message || e) }, status)
+    if (status === 500) console.error(e)
   }
 })
 
-server.listen(PORT, '127.0.0.1', () => console.log(`PairNest on 127.0.0.1:${PORT}`))
+server.listen(PORT, HOST_CFG, () => console.log(`PairNest on http://${HOST_CFG}:${PORT}`))
