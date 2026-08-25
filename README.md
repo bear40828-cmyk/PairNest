@@ -109,22 +109,26 @@ pairnest.example.com {
 
 `server.mjs`、`.git/`、`config.json` 和其余 `data/` 内容不会通过静态 URL 返回。
 
-## 高德地图 Key：每个使用者必须自己申请
+## 地图服务：自行选择（当前示例为高德）
 
-定位功能不能共用原作者或其他人的高德 Key。每个部署者都要登录自己的[高德开放平台](https://console.amap.com/)，为自己的域名分别申请：
+PairNest 不要求必须使用高德。部署者可以根据自己的地区、账号和需求选择高德、百度、腾讯或其他地图服务，并自行申请对应平台的 Key。
+
+当前仓库已经接好的是高德地图，作为可直接使用的实现示例。使用高德时，每个部署者都要登录自己的[高德开放平台](https://console.amap.com/)，为自己的域名分别申请：
 
 1. `Web 服务` Key：服务器坐标转换与逆地理编码使用，填到 `amap.web_service.key`；
 2. `Web 端（JS API）` Key 与安全密钥：地图底图使用，填到 `amap.web_js.key` 和 `amap.web_js.security_code`。
 
-Key 的额度、白名单、账单与定位数据都属于申请者自己的账号。**不要把自己的 Key 写进公开仓库、截图、教程示例或发给其他使用者。**
+如果选择百度、腾讯或其他地图服务，需要把前端地图 SDK、服务端坐标转换与逆地理编码接口、配置字段及对应坐标系处理一起替换；这些平台的 Key 不能直接填进 `amap.*` 字段。
 
-不配置高德时，页面没有高德底图，服务器会尝试使用 OpenStreetMap Nominatim 反查地名。
+无论选择哪家地图服务，Key 的额度、白名单、账单与定位数据都属于申请者自己的账号。**不要把自己的 Key 写进公开仓库、截图、教程示例或发给其他使用者。**
+
+保持当前代码但不配置高德时，页面没有高德底图，服务器会尝试使用 OpenStreetMap Nominatim 反查地名。
 
 ## 隐私说明
 
 - 日记、经期、宠物、语录等数据保存在本机 `data/*.json`。
 - 浏览器提交定位后，精确坐标会先发到你自己的 PairNest 服务器。
-- 配置高德时，服务器会把坐标发送给高德做坐标转换和地名反查；未配置高德时会发送给 OpenStreetMap Nominatim。
+- 服务器会按部署者实际接入的地图服务处理坐标与地名；当前高德示例会把坐标发送给高德，未配置高德时会尝试发送给 OpenStreetMap Nominatim。
 - 只有从 Telegram WebApp 启动时，页面才加载 Telegram 的 WebApp 脚本；普通浏览器不再固定请求该脚本。
 - 登录 Cookie 使用 `HttpOnly` 与 `SameSite=Strict`；经 HTTPS 反代时还会带 `Secure`。
 
