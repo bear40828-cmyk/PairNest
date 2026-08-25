@@ -4,28 +4,35 @@
 
 一个 Node 进程同时提供页面和 API。私人内容保存在本机 `config.json` 与 `data/`，不会写进 Git 仓库。公开部署时整站有登录保护，API 也支持独立 Bearer Token。
 
-## 只有手机：部署到 Render
+## 部署需要什么
 
-先看清楚：PairNest 当前用 JSON 文件保存日记、经期、定位等数据。Render 免费实例的文件会在重启或重新部署后消失，**只能临时看界面，不能保存真实私人数据**。长期内测必须使用带持久磁盘的付费实例；Render 会在最终确认页显示实际价格，确认能接受再创建。
+PairNest 不绑定或推荐具体云平台。每位使用者需要自行选择部署产品，并自行判断其价格、地区、付款方式、服务限制与隐私条款。
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/bear40828-cmyk/PairNest)
+部署环境至少需要：
 
-在 iPhone、iPad 或 Android 浏览器里都可以完成：
+- Node.js 20 或更高版本；
+- 能持续运行 `node server.mjs` 的 Web Service、服务器或自己的电脑；
+- 一个 HTTPS 访问地址，供手机定位和 PWA 安装使用；
+- 一个可写且不会在重启、休眠或重新部署时被清空的持久目录；
+- 可配置环境变量与健康检查的能力。
 
-1. 点上面的 `Deploy to Render`，登录或注册 Render；
-2. 页面会读取仓库里的 `render.yaml`，创建 `Starter` Web Service 和 1 GB 持久磁盘；
-3. 在 `PAIRNEST_PASSWORD` 一栏输入一个只用于 PairNest 的强密码，不要使用 GitHub、邮箱或 ChatGPT 密码；
-4. 查看页面显示的月费，确认无误后再点 `Apply` / `Deploy`；
-5. 等状态变成 `Live`，点 Render 给出的 `onrender.com` 地址，用第 3 步的密码登录；
-6. 登录成功后，再按本文后面的 iPhone / Android 步骤添加到主屏幕。
+建议的服务配置：
 
-每个人点击按钮后创建的是自己 Render 账号里的独立服务和独立磁盘，不会共用项目作者的数据。`PAIRNEST_AUTH_SECRET` 与 `PAIRNEST_API_TOKEN` 会由 Render 自动生成；不要截图或转发 Environment 页面。
+```text
+Build Command: node --check server.mjs
+Start Command: node server.mjs
+Health Check: /healthz
+HOST: 0.0.0.0
+PORT: 由平台提供
+PAIRNEST_STATE_DIR: 持久目录的挂载路径
+PAIRNEST_PASSWORD: 自己设置的网页登录密码
+PAIRNEST_AUTH_SECRET: 足够长的随机字符串
+PAIRNEST_API_TOKEN: 单独生成的随机 Token
+```
 
-### 只想免费预览
+`PAIRNEST_STATE_DIR` 中会保存 `config.json` 和整个 `data/`。选择产品时必须确认这个目录确实具有持久性；如果平台只提供临时文件系统，页面虽然能打开，日记、经期、定位等数据仍可能在服务重启后消失。
 
-可以在 Render 手动新建 Free Web Service，Build Command 填 `node --check server.mjs`，Start Command 填 `node server.mjs`，并设置 `HOST=0.0.0.0` 和自己的 `PAIRNEST_PASSWORD`。**不要填写真实日记、定位或经期数据**：免费实例没有持久磁盘，数据可能在休眠唤醒、重启或部署后消失。
-
-如果要长期免费保存，当前版本只能在自己的电脑或其他能提供持久文件系统的设备上运行；以后若改成 Cloudflare D1 等数据库，才适合做真正的免费纯云部署。
+每位使用者都应部署自己的独立实例，不要多人共用原作者的密码、Token、地图 Key、配置文件或数据目录。平台选择、账号注册、套餐购买与续费由使用者自行处理。
 
 ## 从零部署
 
