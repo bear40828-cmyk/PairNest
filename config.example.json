@@ -1,5 +1,11 @@
 {
+  "host": "127.0.0.1",
   "port": 8795,
+  "auth": {
+    "password": "",
+    "secret": "",
+    "apiToken": ""
+  },
   "startDate": "2026-01-01",
   "parents": {
     "me": {
