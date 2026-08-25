@@ -10,11 +10,15 @@
 <!-- 让网页自己画到状态栏底下，否则 iOS 用主题色刷一条，看着就是分层 -->
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <link rel="apple-touch-icon" href="/icon-180.png?v=2" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="PairNest" />
 <meta name="theme-color" content="#fdf1e6" />
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<meta name="format-detection" content="telephone=no" />
+<script>
+  // 只有从 Telegram WebApp 启动时才请求 Telegram 脚本；普通浏览器不再固定向第三方发请求。
+  if (/(?:^|[?#&])tgWebApp/i.test(location.href)) {
+    document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>')
+  }
+</script>
 <style>
   :root{
     --paper:#fff6f7; --card:#fffdfd; --ink:#6b4a52; --sub:#b58e97;
@@ -22,14 +26,15 @@
     --wall:#fff1f4; --floor:#ffe3d5;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{height:100vh;min-height:100vh}
+  html,body{width:100%;height:100%;min-height:100%;background:#fdf1e6}
   body{
-    margin:0;background:#fdf1e6;color:var(--ink);overflow:hidden;
+    margin:0;min-height:100dvh;background:#fdf1e6;color:var(--ink);overflow:hidden;
     font-family:-apple-system,"PingFang SC","Hiragino Sans GB",sans-serif;
+    overscroll-behavior:none;
   }
 
   /* ===== 主页：一间屋子 ===== */
-  #home{position:fixed;inset:0}
+  #home{position:fixed;inset:0;min-height:100dvh}
   body:has(#home){background:linear-gradient(to bottom,#fdf5ea 0 50%,#f7b87f 50% 100%)}
   .ico{
     width:38px;height:38px;border:2.5px solid var(--line);border-radius:12px;
@@ -102,7 +107,7 @@
   /* ===== 内页 ===== */
   #page{
     position:fixed;inset:0;background:var(--paper);z-index:10;
-    display:none;flex-direction:column;
+    min-height:100dvh;display:none;flex-direction:column;
   }
   #page.on{display:flex}
   .phead{
@@ -346,7 +351,7 @@
   .cal .d .dot img{width:21px;height:21px}
   .cal .d.has{background:#fff0f4}
   .write{
-    position:fixed;inset:0;background:var(--paper);z-index:20;display:none;flex-direction:column
+    position:fixed;inset:0;min-height:100dvh;background:var(--paper);z-index:20;display:none;flex-direction:column
   }
   .write.on{display:flex}
   .wsheet{
@@ -394,7 +399,7 @@
     border:2px solid var(--ink);border-radius:15px;padding:5px 13px
   }
   .sheet{
-    position:fixed;inset:0;z-index:30;display:none;
+    position:fixed;inset:0;min-height:100dvh;z-index:30;display:none;
     background:var(--paper);flex-direction:column
   }
   .sheet.on{display:flex}
@@ -966,6 +971,16 @@
 </div>
 
 <script>
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const r = await nativeFetch(...args);
+  const input = args[0] instanceof Request ? args[0].url : String(args[0]);
+  if (r.status === 401 && new URL(input, location.href).origin === location.origin) {
+    location.replace('/login');
+    throw new Error('session_expired');
+  }
+  return r;
+};
 const tg = window.Telegram?.WebApp; tg?.ready?.(); tg?.expand?.();
 const MOODS = ['开心','心动','平静','心累','烦躁','生气','伤心','无语','兴奋','想你'];
 const EVENTS = ['来月经','头痛','吃药','奶茶','遛狗','熬夜'];
